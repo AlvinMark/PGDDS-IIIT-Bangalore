@@ -1,0 +1,518 @@
+﻿--Title: The New York Taxi and Limousine Commission [TLC] Analysis
+--Brief: This assignment is centered on the concepts of Ingesting and Analyzing Big Data on the APACHE-HIVE platform.
+--The dataset provided contains the detailed trip level data of trips made by taxis in New York City.
+--Our analysis is focused on the yellow taxis for the months of November and December 2017.
+
+--Dataset Access: We can access the dataset using the below links:
+--November Trip Data: https://s3.amazonaws.com/nyc-tlc/trip+data/yellow_tripdata_2017-11.csv
+--December Trip Data: https://s3.amazonaws.com/nyc-tlc/trip+data/yellow_tripdata_2017-12.csv
+--The Data Dictionary for this dataset is as follows: [Field Name--Description]
+--[1] vendorid--A code indicating the TPEP provider that provided the record. 1= Creative Mobile Technologies, LLC; 2= VeriFone Inc. 
+--[2] tpep_pickup_timestamp--The date and time when the meter was engaged.
+--[3] tpep_dropoff_timestamp--The date and time when the meter was disengaged.
+--[4] passenger_count--The number of passengers in the vehicle. This is a driver-entered value.
+--[5] trip_distance--The elapsed trip distance in miles reported by the taximeter.
+--[6] rate_code--The final rate code in effect at the end of the trip. 1= Standard rate 2=JFK 3=Newark 4=Nassau or Westchester 5=Negotiated fare 6=Group ride.
+--[7] store_forward_flag--This flag indicates whether the trip record was held in vehicle memory before sending to the vendor, aka store and forward, because the vehicle did not have a connection to the server. Y= store and forward trip N= not a store and forward trip.
+--[8] pickup_location--TLC Taxi Zone in which the taximeter was engaged.
+--[9] dropoff_location--TLC Taxi Zone in which the taximeter was disengaged.
+--[10] payment_type--A numeric code signifying how the passenger paid for the trip. 1= Credit card 2= Cash 3= No charge 4= Dispute 5= Unknown 6= Voided trip.
+--[11] fare_charge--The time-and-distance fare calculated by the meter.
+--[12] extra_charge--Miscellaneous extras and surcharges.  Currently, this only includes the $0.50 and $1 rush hour and overnight charges.
+--[13] mta_tax_charge--$0.50 MTA tax that is automatically triggered based on the metered rate in use.
+--[14] tip_amount--Tip amount – This field is automatically populated for credit card tips. Cash tips are not included.
+--[15] tolls_charge--Total amount of all tolls paid in trip.
+--[16] improvement_surcharge--$0.30 improvement surcharge assessed trips at the flag drop. The improvement surcharge began being levied in 2015.
+--[17] total_charge--The total amount charged to passengers. It does not include cash tips.
+
+--Methodology for Analysis: I will conduct the analysis in 3 stages.
+--Stage 1: Data Quality Verification and Exploratory Data Analysis
+--Stage 2: Analysis Level-1
+--Stage 3: Analysis Level-2
+
+--Platform for Analysis: I will be utilizing the AWS platform for the analysis of the dataset and the Queries will be written and executed from a HUE notebook.
+--Prerequisites for Analysis:
+--[1] Create a suitable S3 bucket. I created a bucket called amwnyctaxidata and created a file called raw_data. 
+--[2] Upload the dataset into S3 using the AWS CLI: Create a cluster and access the master node through the CLI. Download the datasets into a suitable directory on the master using the [sudo wget <paste link>] command. Then using the [sudo aws s3 cp <file name> <bucket name>] command transfer the dataset into the desired S3 bucket.
+--[3] Launch Hue Interface from the master node and execute the queries on notebook.
+
+--Set the following parameters on our Hue Notebook:
+--SET hive.exec.dynamic.partition = true;
+--SET hive.exec.max.dynamic.partitions = 1000;
+--SET hive.exec.max.dynamic.partitions.pernode = 1000;
+--SET hive.execution.engine=mr;
+
+--*************** Stage 1: Data Quality Verification and Exploratory Data Analysis ***************--
+
+--I will create an intial data table titled datadump_taxifare. Then use this table to get a general understanding of the dataset.
+--We will extract basic statistics from this datadump_taxifare table and check for data validity and highlight any nonconforming [fishy] values.
+--We can analyze the statistics by considering that the table stores data in the following categories: 1.Trip Details and 2.Fare Details.
+--We will identify all the nonconformities in the initial data  table datadump_taxifare. 
+--Then create a neatly partioned and formatted data table to store the final data table orc_parted_taxifare to be used for Stage 2 and Stage 3 analysis.
+
+
+--1.1 Creating the intial data table titled datadump_taxifare to be used for Preliminary Analysis. 
+drop table datadump_taxifare;
+
+CREATE EXTERNAL TABLE IF NOT EXISTS datadump_taxifare(vendorid int, tpep_pickup_timestamp string, tpep_dropoff_timestamp string,
+passenger_count int, trip_distance double,rate_code int, store_forward_flag string, pickup_location int, dropoff_location int,
+payment_type int, fare_charge double, extra_charge double, mta_tax_charge double, tip_amount double, tolls_charge double,
+improvement_surcharge double, total_charge double)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+LOCATION 's3://amwnyctaxidata/raw_data/'
+tblproperties ("skip.header.line.count"="2");
+
+--1.2 Testing if the data table has been loaded successfully into the HIVE environment.
+
+select * from datadump_taxifare limit 10;
+
+--All table fields have been populated with an appropriate schema and format to store the data
+
+--******** Stage 1: Question 1 ********--
+--1.3 How many records has each TPEP [Taxi-Passenger Experience Enhancement Program Provider] provided? 
+--Write a query that summarises the number of records of each provider.
+
+select vendorid as Vendor_Id_1CreativeMob_2VeriFone, count(*) as Num_Records
+from datadump_taxifare
+group by vendorid
+order by vendorid;
+
+--Creative Moblie Technologies,LLC provided 84,47,149 records [8.47 million records]
+--VeriFone Inc. provided 103,45,930 records [10.34 million records]
+--**********--
+
+--******** Stage 1: Question 2 ********--
+--1.4 The data provided is for months November and December only. Check whether the data is consistent, and if not, identify the data quality issues. 
+--Mention all data quality issues in comments.
+--Since both tpep_pickup_timestamp and tpep_dropoff_timestamps are available we will set tpep_pickup_timestamp as our reference column as it is the first point of contact with passenger. Only trips that registered a tpep_pickup_timestamp and tpep_dropoff_timestamp during November and December 2017 will be considered.
+--This implies that only trips that have been started and completed between November to December 2017 will be considered for our analysis.
+
+select  year(tpep_pickup_timestamp)as Pickup_Year, month(tpep_pickup_timestamp)as Pickup_Month, count(*)as Num_Records
+from datadump_taxifare
+group by year(tpep_pickup_timestamp), month(tpep_pickup_timestamp)
+order by Pickup_Year, Pickup_Month;
+
+--The pickup_timestamp results reveal several nonconforming records. The pickup_timestamps range from the year 2001 to 2041.
+--Since our study is focussed only on the trip details of November and December of 2017. There are a 315 nonconforming records based on pickup_timestamp.
+
+--1.5 In Query 1.4 we've checked the tpep_pickup_timestamp. Let us observe if there are any nonconformities in the tpep_dropoff_timestamp.
+
+select year(tpep_dropoff_timestamp) as Dropoff_Year, month(tpep_dropoff_timestamp) as Dropoff_Month, count(*) as Num_Records
+from datadump_taxifare
+group by year(tpep_dropoff_timestamp), month(tpep_dropoff_timestamp)
+order by Dropoff_Year, Dropoff_Month;
+
+--The dropoff_timestamps results range from the year 2001 to 2041.
+--There are a total of 1907 non-conforming records. 
+
+--1.6 Let's check if there are any records in which the pickup_timestamp is after the dropoff_timestamp. This will clearly be a nonconformity as it is not logical.
+
+SELECT count(*) as NonConf_timestamps
+FROM datadump_taxifare
+where unix_timestamp(tpep_pickup_timestamp) > unix_timestamp(tpep_dropoff_timestamp);
+
+--The results reveal that there are 1419 records with pickup_timestamp after the dropoff_timestamp.
+--Clearly, the dataset is not consistent and therefore we will indulge in a deeper EDA to identify data quality issues.
+--These nonconforming records need to be removed before we proceed with Stage 2 and Stage 3 analysis.
+
+--**********--
+
+--We can analyze the statistics by considering that the table stores data in the following categories: 1.Trip Details and 2.Fare Details.
+
+--1.7 EDA of components associated with Trip Details from datadump_taxifare.
+
+select count(*) as number_of_records, count(distinct vendorid) as number_of_tpep_vendors, min(to_date(tpep_pickup_timestamp)) as oldest_pickup_timestamp, 
+max(to_date(tpep_pickup_timestamp)) as recent_pickup_timestamp, min(to_date(tpep_dropoff_timestamp)) as oldest_dropoff_timestamp, 
+max(to_date(tpep_dropoff_timestamp)) as recent_dropoff_timestamp,  min(passenger_count) as min_passengers_pertrip, 
+max(passenger_count) as max_passengers_pertrip, avg(passenger_count) as average_passengers_pertrip, min(trip_distance) as min_trip_distance,
+max(trip_distance) as max_trip_distance, avg(trip_distance) as average_trip_distance, count(distinct rate_code) as number_of_rate_codes,
+count(distinct store_forward_flag) as types_of_store_forward_flag, count(distinct pickup_location) as num_of_pickup_zones,
+count(distinct dropoff_location) as num_of_dropoff_zones, count(distinct payment_type) as number_of_payment_types
+from datadump_taxifare;
+
+--1. There are a total of 187,93,079 records in the dataset
+--2. There are 2 TPEP vendors
+--3. The tpep_pickup_timestamps and tpep_drop_timestamps range between 1st January 2001 to 15th November 2041. This is a nonconformity.
+--4. The passenger count ranges between 0 to 192. Clearly this is a nonconformity as trip cannot be registered without passengers and 192 passengers is not Coherent.
+--5. The trip distances range between 0 to 702.5 miles. A trip of 0 miles should not be charged and 702.5 miles seems like a outlier. However we will retain it. Average distance per trip is at 2.87 miles.
+--6. There are 7 distinct rate_codes in the dataset when the data_dictionary limits it to 6. This is a nonconformity.
+--7. There are 264 logged pickup_locations and 262 logged dropoff_locations.
+--8. There are 4 distinct payment_type in the dataset
+
+
+--1.8 EDA of components associated with Fare Details from datadump_taxifare.
+
+select min(fare_charge) as min_fare_charge, max(fare_charge) as max_fare_charge, avg(fare_charge) as average_fare_charge,
+min(extra_charge) as min_extra_charge, max(extra_charge) as max_extra_charge, avg(extra_charge) as average_extra_charge,
+count(distinct mta_tax_charge) as types_of_mta_tax_charge, min(mta_tax_charge) as min_mta_tax_charge, max(mta_tax_charge) as max_mta_tax_charge, avg(mta_tax_charge) as average_mta_tax_charge,
+min(tip_amount) as min_tip_amount, max(tip_amount) as max_tip_amount, avg(tip_amount) as average_tip_amount,
+min(tolls_charge) as min_toll_charge, max(tolls_charge) as max_toll_charge, avg(tolls_charge) as average_toll_charge,
+count(distinct improvement_surcharge) as types_of_surcharge, min(improvement_surcharge) as min_surcharge, max(improvement_surcharge) as max_surcharge, avg(improvement_surcharge) as average_surcharge,
+min(total_charge) as min_total_charge, max(total_charge) as max_total_charge, avg(total_charge) as average_total_charge
+from datadump_taxifare;
+
+--1. The fare_charge attribute Range: -$499 and $3,93,221.5 | Average: $13.04. The trips with fare_charges <= 0 will be treated as Nonconformities. The upperbound at $3,93,221.5 seems like an outlier but we will retain it with caution.
+--2. The extra_charge attribute Range: -$48.64 and $69.8 | Average: $0.32. The extra_charge is a surcharge that can only take up $0.5 and $1 during rush hour and traffic, otherwise it is $0. Therefore, all other values will be treated as non-conformities.
+--3. The mta_tax_charge attribute Range: -$0.5 and $117.85 | Average: $0.497. There are 19 distinct values of mta_tax_charge. The data dictionary specified that mta_tax_charge of $0.5 is triggered based on metered rate in use. Therefore, it can only take up two values $0 or $0.5 all other values will be treated as non-conformities.
+--4. The tip_amount attribute Range: -$218 and $496 | Average: $1.85. Tip tip_amounts are automatically populated for credit card paid trips but cash tips are not recorded. However, a negative tip amount is peculiar [It might indicate a refund of trip or abnormality] therefore all records with tip amount<0 will be treated as non-conforming.
+--5. The tolls_charge arribute Range: -$19 and $1018.95 | Average: $0.327. Negative toll charges seem peculiar and may indicate a refund transaction or abnormality. Therefore, all records with tolls_charge <0 will be treated as a non-conformity.
+--6. The improvement_surcharge attribute Range: -$0.3 and $1 | Average: $0.299. The improvement_surcharge of $0.3 began being levied on assessed trips at flagdrop this means that the improvement_surcharge can only take up $0 or $0.3. The dataset has 5 distinct improvement_surcharges therefore we will treat all improvement_surcharge other than $0 and $0.3 as nonconformities.
+--7. The total_charge attribute Range: -$499.3 and $3,93,222.32 | Average: $16.34. The negative total_charges may be logged due to refunds or disputed trips. This is an abnormality and will not be considered. Only records with total_charge >0 will be considered for our analysis. The upperbound total charge $3,93,222.32 represents an abnormality. It is caused due to the record with the fare charge as $3,93,221.5 . We will retain this record as we have no specified upper limit for the total_charge attribute.
+
+--1.9 Since passenger_count is an attribute registered by the driver it can be a source of Erroneous data. Checking passenger_count.
+
+select passenger_count as Num_of_Passengers, count(*) as Num_Records
+from datadump_taxifare
+group by passenger_count
+order by passenger_count;
+
+--The passenger_count values range between 0 to 192 clearly there are some data quality issues in this attribute.
+--Trips cannot be registed and paid for with 0 passengers [These records may appear due to some refunds or abnormailties] and a taxi cannot accomodate 192 passengers. Therefore we must set some limitations to this parameter.
+--The maximum amount of passengers allowed in a yellow taxicab by law is four (4) in a four (4) passenger taxicab or five (5) passengers in a five (5) passenger taxicab, except that an additional passenger must be accepted if such passenger is under the age of seven (7) and is held on the lap of an adult passenger seated in the rear. Source: http://www.nyc.gov/html/tlc/html/faq/faq_pass.shtml
+--Therefore only passenger_count between 1-6 will be treated as valid records.
+
+--1.10 Checking the rate_code parameter: It follows the encoding 1= Standard rate 2=JFK 3=Newark 4=Nassau or Westchester 5=Negotiated fare 6=Group ride.
+
+select rate_code as Rate_Code, count(*) as Num_Records
+from datadump_taxifare
+group by rate_code
+order by rate_code;
+
+--From the above result there are 7 distinct rate codes while the data dictionary limits it to 6 distinct codes between 1-6.
+--The 178 records under rate_code 99 will be treated as non-conforming
+
+--1.11 Checking the payment_type parameter.
+
+select payment_type as Payment_type, count(*) as Num_Records
+from datadump_taxifare
+group by payment_type
+order by payment_type;
+
+--There are 4 distinct payment_types that are in agreement with the data-disctionary.
+
+--1.12 Checking the extra_charges attribute, According to the data dictionary it only includes the $0.50 and $1 rush hour and overnight charges.
+
+select extra_charge as Extra_Misc_Charge, count(*) as Num_Records
+from datadump_taxifare
+group by extra_charge
+order by extra_charge;
+
+--There are 44 distinct extra_charge values in the dataset Ranging between -$48.64 and $69.8.
+--However, the extra_charge is a surcharge that can only take up $0.5 and $1 during rush hour and traffic, otherwise it is $0. Therefore, all other values will be treated as non-conformities.
+
+--1.13 Checking MTA tax attribute. $0.50 MTA tax.
+
+select mta_tax_charge as MTA_Tax, count(*) as Num_Records
+from datadump_taxifare
+group by mta_tax_charge
+order by mta_tax_charge;
+
+--There are 19 distinct mta_tax_charge values in the dataset Ranging between -$0.5 and $117.85.
+--The data dictionary specified that mta_tax_charge of $0.5 is triggered based on metered rate in use. Therefore, it can only take up two values $0 or $0.5 all other values will be treated as non-conformities.
+
+--1.14 Checking improvement_surcharge other than $0.30 has been recorded.
+
+select improvement_surcharge as Improvement_Surcharge, count(*) as Num_Records
+from datadump_taxifare
+group by improvement_surcharge
+order by improvement_surcharge;
+
+--There are 5 distinct values of improvement_surcharge Rangeing between -$0.3 and $1.
+--The improvement_surcharge of $0.3 began being levied on assessed trips at flagdrop this means that the improvement_surcharge can only take up $0 or $0.3 . All other values of improvement_surcharge will be treated as non-conformity
+
+--1.15 Checking if non-zero tip amount has been registed for cash payment trips.
+
+select tip_amount as Tip_Value, count(*) as Num_Records
+from datadump_taxifare
+where payment_type=2 and tip_amount!= 0
+group by tip_amount;
+
+--There are 3 records for which payment_type was cash are it registered a tip_amount in the range $1.8 to $20.65.
+--These records are non-conforming as the data dictionary specifies that tip_amount is not registered for cash payments.
+--We will not write any specialized filter conditions under the where clause for this while creating the final table as these 3 records are nearly insignificant while analyzing the 18 million records in the dataset.
+
+--1.16 Checking store_forward_flag parameter
+
+select store_forward_flag as Store_and_Forward_Flag, count(*) as Num_Records
+from datadump_taxifare
+group by store_forward_flag;
+
+--There are only 2 store_forward_flag parameter values [Y and N] which is inline with the specified limits
+--With 0.34% of the total records being stored and the passed to the servers.
+
+
+--******** Stage 1: Question 3 ********--
+--1.17 You might have encountered unusual or erroneous rows in the dataset. 
+--Can you conclude which vendor is doing a bad job in providing the records?
+
+select vendorid as Vendor_Id_1CreativeMob_2VeriFone, count(*) as NonConf_Records
+from datadump_taxifare
+where (year(tpep_pickup_timestamp) !=2017 or month(tpep_pickup_timestamp) not in (11,12) or year(tpep_dropoff_timestamp) !=2017 or month(tpep_dropoff_timestamp) not in (11,12) or unix_timestamp(tpep_pickup_timestamp) > unix_timestamp(tpep_dropoff_timestamp) or passenger_count not in (1,2,3,4,5,6) or trip_distance <= 0.0 or rate_code not in (1,2,3,4,5,6) or payment_type not in (1,2,3,4,5,6) or fare_charge <= 0 or extra_charge not in (0,0.5,1) or mta_tax_charge not in(0,0.5) or tip_amount < 0.0 or (payment_type=2 and tip_amount!=0) or tolls_charge < 0.0 or improvement_surcharge not in (0,0.3) or total_charge <= 0)
+group by vendorid
+order by vendorid;
+
+--For VendorID 1: Creative Moblie Technologies,LLC
+--Number of Non-Conforming Records Provided: 2,08,405 records
+--Total Records Provided [From Query --1.3]: 84,47,149 records [8.47 million records]
+--Percentage Non-Conforming Records: 2.467%
+
+--For VendorID 2: VeriFone Inc.
+--Number of Non-Conforming Records Provided: 103192
+--Total Records Provided [From Query --1.3]: 103,45,930 records [10.34 million records]
+--Percentage Non-Conforming Records: 0.997%
+
+--Clearly from the above statements it is clear that of the two vendors, VendorID 1: Creative Moblie Technologies,LLC is doing a bad job of providing records.
+
+--**********--
+
+--This marks the end of our EDA and Data Quality checks of the datadump_taxifare table. I will specify suitable filter conditions to ensure only conforming and valid trip records are considered for the Stage 2 and Stage 3 analysis. A filtered table titled orc_parted_taxifare will be created. This table is of the ORC format and partitioned on mnth[month] and m_day[day of month]. All further analysis will be done using this table.
+--A total of 3,11,597 records were found to be non-conforming from query --1.17. This accounts for 1.66% of the entire dataset. Therefore we can remove these records and proceed with the analysis.
+
+--1.18 Setting Hive Parameters in case not already set.
+
+SET hive.exec.dynamic.partition = true;
+SET hive.exec.dynamic.partition.mode = nonstrict;
+SET hive.exec.max.dynamic.partitions = 1000;
+SET hive.exec.max.dynamic.partitions.pernode = 1000;
+SET hive.execution.engine=mr;
+
+--1.19 Creating the orc_parted_taxifare table [Note: The location of the table has been altered appropriately]
+
+CREATE EXTERNAL TABLE IF NOT EXISTS orc_parted_taxifare(vendorid int, tpep_pickup_timestamp string, tpep_dropoff_timestamp string,
+passenger_count int, trip_distance double,rate_code int, store_forward_flag string, pickup_location int, dropoff_location int,
+payment_type int, fare_charge double, extra_charge double, mta_tax_charge double, tip_amount double, tolls_charge double,
+improvement_surcharge double, total_charge double) PARTITIONED BY (mnth int, m_day int)
+STORED AS orc
+LOCATION 's3://amwnyctaxidata/orc_parted/'
+TBLPROPERTIES ("orc.compress" = "SNAPPY");
+
+--1.20 Populating the orc_parted_taxifare PARTITION(mnth, m_day) table
+
+INSERT OVERWRITE TABLE orc_parted_taxifare PARTITION(mnth, m_day)
+select vendorid, tpep_pickup_timestamp, tpep_dropoff_timestamp, passenger_count, trip_distance, rate_code, store_forward_flag,
+pickup_location, dropoff_location, payment_type, fare_charge, extra_charge, mta_tax_charge, tip_amount, tolls_charge,
+improvement_surcharge, total_charge, month(tpep_pickup_timestamp)as mnth, day(tpep_pickup_timestamp)as m_day
+from datadump_taxifare
+where year(tpep_pickup_timestamp)=2017 and month(tpep_pickup_timestamp) in (11,12) and year(tpep_dropoff_timestamp)=2017 and month(tpep_dropoff_timestamp) in (11,12) and unix_timestamp(tpep_pickup_timestamp) < unix_timestamp(tpep_dropoff_timestamp) and passenger_count in(1,2,3,4,5,6) and trip_distance > 0.0 and rate_code in(1,2,3,4,5,6) and payment_type in (1,2,3,4,5,6) and fare_charge > 0 and extra_charge in (0,0.5,1) and mta_tax_charge in(0,0.5) and tip_amount>=0.0 and tolls_charge >= 0.0 and improvement_surcharge in (0,0.3) and total_charge > 0;
+
+--******************** Stage 2: Analysis Level-1 ********************--
+
+--All analysis wil be performed using the filtered, partitioned and formatted table orc_parted_taxifare subject to the predefined data assumptions.
+
+--******** Stage 2: Question 1 ********--
+
+--2.1 Compare the average fare_charge for November and December.
+--Lets have a look at the grouped table of month and average fare_charge.
+
+select mnth as Month_of_Year, round(avg(fare_charge),2)as Average_Fare_Charge
+from orc_parted_taxifare
+group by mnth
+order by mnth;
+
+--Let's compare the results of the above table.
+
+select round(avg(CASE when mnth=11 then fare_charge else null end),2)as November_Average_Fare, round(avg(CASE when mnth=12 then fare_charge else null end),2)as December_Average_Fare, round(100*((avg(CASE when mnth=11 then fare_charge else null end)-avg(CASE when mnth=12 then fare_charge else null end))/avg(CASE when mnth=12 then fare_charge else null end)),2)as Nov_AvgFare_pergreaterthan_December
+from orc_parted_taxifare;
+
+--November Average fare_charge: $12.9
+--December Average fare_charge: $12.75
+--Therefore the Average fare_charge recorded during November is 1.22% higher than the average fare_charge recorded in December.
+
+--**********--
+
+--******** Stage 2: Question 2 ********--
+
+--2.2 Explore the ‘number of passengers per trip’ - how many trips are made by each level of ‘Passenger_count’? 
+--Do most people travel solo or with other people?
+
+--Let's have a look at how many trips are made by each level of passenger_count 
+
+select passenger_count as Num_of_Passengers, count(*)as Num_Records
+from orc_parted_taxifare
+group by passenger_count
+order by passenger_count;
+
+--Let's compare if the passengers prefer to travel solo [i.e, passenger_count=1] or in groups [i.e, passenger_count [2-6]]
+
+SELECT sum(CASE when passenger_count = 1 THEN 1 ELSE 0 END)as Num_Solo_Passenger_Trips, 
+sum(CASE when passenger_count != 1 THEN 1 ELSE 0 END)as Num_Group_Passenger_Trips, 
+round(100*sum(CASE when passenger_count = 1 THEN 1 ELSE 0 END)/count(*),3) as Solo_Trips_as_Percentage_of_Total_Trips
+from orc_parted_taxifare;
+
+--Number of trips with Solo Passengers: 131,02,523
+--Number of trips with Group Passengers: 53,78,444
+--Percentage of trips with Solo Passengers w.r.t Total Number of trips: 70.897%
+--From the results it is clear that in 70.897% of all trips, people prefer to travel Solo.
+
+--**********--
+
+--******** Stage 2: Question 3 ********--
+
+--2.3 Which is the most preferred mode of payment?
+--Lets look at the grouped table of payment_type w.r.t Number of Records.
+
+select payment_type as Payment_Mode, count(*) as Num_Records
+from orc_parted_taxifare
+group by payment_type
+order by Num_Records desc;
+
+--From the table it is clear that Credit_Card [payment_type=1] and Cash [payment_type=2] constitute the majority of the records in the dataset. Let us compare the results.
+
+SELECT sum(CASE when payment_type = 1 THEN 1 ELSE 0 END)as Credit_Card_Paid_Trips,sum(CASE when payment_type = 2 THEN 1 ELSE 0 END)as Cash_Paid_Trips, count(*)as Total_Number_Trips,
+round(100*sum(CASE when payment_type = 1 THEN 1 ELSE 0 END)/count(*),2) as Percentage_Trips_paidwith_Credit_Card, round(100*sum(CASE when payment_type = 2 THEN 1 ELSE 0 END)/count(*),2) as Percentage_Trips_paidwith_Cash
+from orc_parted_taxifare;
+
+--Total Number of records: 184,80,967
+
+--Credit Card Payments [payment_type=1]
+--Number of Credit Card Paid trips: 124,69,337
+--Percentage of Total Trips paid with Credit Card [payment_type=1]: 67.47%
+
+--Cash Payments [payment_type=2]
+--Number of Cash Paid trips: 59,14,388
+--Percentage of Total Trips paid with Cash [payment_type=2]: 32.00%
+
+--Therefore, Credit Card [payment_type=1] is the most preferred type of payment.
+--**********--
+
+--******** Stage 2: Question 4 ********--
+
+--2.4 What is the average tip paid? Compare the average tip with the 25th, 50th and 75th percentiles and comment whether the ‘average tip’ is a representative statistic (of the central tendency) of ‘tip amount paid’.
+
+--In our dataset it is clearly stated that tip_amount is not recorded for cash payments and is default set to 0. We need to remove these fields before we compute the central tendency as these records are synonymous to missing records. Therefore we will remove all records where payment_type=2 [Cash Payments]
+
+select round(avg(tip_amount),3) as Average_Tip, round(percentile_approx(tip_amount,0.25),3)as 25th_Percentile_Tip, round(percentile_approx(tip_amount, 0.50),3)as 50th_Percentile_Tip, round(percentile_approx(tip_amount, 0.75),3)as 75th_Percentile_Tip, count(distinct tip_amount)as Distict_Tip_Amounts
+from orc_parted_taxifare
+where payment_type != 2;
+
+--Here, since tip_amount is stored as double data type we have to use percentile_approx() instead of percentile(). From the documentation: percentile_approx(DOUBLE col, p [, B]) .Returns an approximate pth percentile of a numeric column (including floating point types) in the group. The B parameter controls approximation accuracy at the cost of memory. Higher values yield better approximations, and the default is 10,000. When the number of distinct values in col is smaller than B, this gives an exact percentile value.
+--Since the number of distinct tip amounts 3,894<10,000 percentile_approx() returns the exact percentile value.
+
+--There $0.683 difference of the Average_Tip - Median_Tip [50th percentile], this diffence constitutes to 39.50% of the inter-quartile range. Therefore, there is significant skewness in the distribution of the tip_amount parameter. This implies that the Average Tip is sqewed to the right of the Median_tip. This may be offset due to certain records having higher tip_amount values. Therefore, in this situation Average_Tip is not representative of central tendency. We can consider Median_Tip as a better representative of central tendency.
+
+--**********--
+
+--******** Stage 2: Question 5 ********--
+
+--2.5 Explore the ‘Extra’ (charge) variable - what is the fraction of total trips where an extra charge is levied?
+
+--Let us observe the extra_charge attribute in a grouped table w.r.t number of records.
+
+select extra_charge as Extra_Misc_Charge, count(*)as Num_Records
+from orc_parted_taxifare
+group by extra_charge
+order by extra_charge;
+
+--The number of trips where the extra_charge was levied is marginally lower than the number of trips for which it was not. 
+--Let us write a query to compare the Fraction of trips for which the extra_charge was levied.
+
+SELECT sum(CASE when extra_charge != 0 THEN 1 ELSE 0 END)as Trips_With_Extra_Misc_Charge, count(*)as Total_Number_Trips,
+round(sum(CASE when extra_charge != 0 THEN 1 ELSE 0 END)/count(*),5) as Fraction_Trips_With_Extra_Charge
+from orc_parted_taxifare;
+
+--Number of Trips for which the Extra_Misc_Charge was levied: 85,24,850
+--Total Number of Trips: 184,80,967
+--Fraction of trips for which the Extra_Misc_Charge was levied: 0.46128 [or 46.128%]
+
+--**********--
+
+--******************** Stage 3: Analysis Level-2 ********************--
+
+--******** Stage 3: Question 1 ********--
+
+--3.1 What is the correlation between the number of passengers and tip paid? 
+--Do multiple travellers pay more compared to solo travellers?
+
+--Here we are trying to perform a correlation study between the tip_amount and number of passengers. Since this study will be directly impacted with the magnitude value of tip_amount and our dataset encodes tip_amount as $0 for all trips that are paid with Cash or with [payment_type=2] irrespective of the number of passengers. This will distort the correlation value. Therefore, we need to exclude the records with payment_type=2 for this query.
+
+select round(corr(passenger_count, tip_amount),3)as Corr_PassengerCnt_vs_TipAmt, round(avg(CASE when passenger_count=1 then tip_amount else null end),3) as Solo_Trips_Average_Tip, round(avg(CASE when passenger_count != 1 then tip_amount else null end),3) as Group_Trips_Average_Tip
+from orc_parted_taxifare
+where payment_type != 2;
+
+--Correlation between Passenger Count and Tip_Amount: +0.009
+--This suggests a very weak positive correlation between Passenger Count and Tip_Amount.
+-- Average Tip for Solo Trips: $2.659
+-- Average Tip for Group Trips: $2.743
+
+--My results of average tip are consistent with the obtained correlation value. Therefore there is a weak positive correlation betweem Passenger Count and Tip Amount, implying that passengers travelling in groups are likely to give a higher tip. [Correlation not Causation]
+
+--**********--
+
+--******** Stage 3: Question 2 ********--
+--3.2 Create five buckets of ‘tip paid’: [0-5), [5-10), [10-15) , [15-20) and >=20. Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+
+select Tip_Bucket, count(*)as Num_Records, max(records_count)as Total_Number_Records, 
+round(count(*)/max(records_count),5)as Tip_Bucket_asfractionof_Overall
+from (select kcol.*, count(*) over () records_count,
+	CASE when tip_amount >= 0 and tip_amount <5 then '0_Bucket_5' 
+	when tip_amount >=5 and tip_amount < 10 then '5_Bucket_10'
+	when tip_amount >=10 and tip_amount < 15 then '10_Bucket_15'
+	when tip_amount >=15 and tip_amount < 20 then '15_Bucket_20'
+	else '20above_Bucket' 
+	end as Tip_Bucket 
+    from orc_parted_taxifare kcol)as sub_tbl
+group by Tip_Bucket
+order by Tip_Bucket_asfractionof_Overall desc;
+
+--The results of the table clearly specify the following about Tip_Bucket
+--0_Bucket_5 constitutes 92.411% of all records in the dataset.
+--5_Bucket_10 constitutes 5.623% of all records in the dataset.
+--10_Bucket_15 constitutes 1.685% of all records in the dataset.
+--15_Bucket_20 constitutes 0.191% of all records in the dataset.
+--20above_Bucket constitutes 0.090% of all records in the dataset.
+
+--These results are expected as the tip_amount is logged as $0 for all Cash paid trips where (payment_type=2), which constitutes to about 32% of all records in the dataset. Therefore if a total objective view is required over the tip_amount wise bucketing of the table then we can specify a filter condition to remove all records where payment_type=2 as given below:
+
+--select Tip_Bucket, count(*)as Num_Records, max(records_count)as Total_Number_Records, 
+--round(count(*)/max(records_count),5)as Tip_Bucket_asfractionof_Overall
+--from (select kcol.*, count(*) over () records_count,
+--	CASE when tip_amount >= 0 and tip_amount <5 then '0_Bucket_5' 
+--	when tip_amount >=5 and tip_amount < 10 then '5_Bucket_10'
+--	when tip_amount >=10 and tip_amount < 15 then '10_Bucket_15'
+--	when tip_amount >=15 and tip_amount < 20 then '15_Bucket_20'
+--	else '20above_Bucket' 
+--	end as Tip_Bucket 
+--    from orc_parted_taxifare kcol)as sub_tbl
+--where sub_tbl.payment_type != 2
+--group by Tip_Bucket
+--order by Tip_Bucket_asfractionof_Overall desc;
+
+
+
+--******** Stage 3: Question 3 ********--
+
+--3.3 Which month has a greater average ‘speed’ - November or December? Note that the variable ‘speed’ will have to be derived from other metrics.
+--The Unix epoch (or Unix time or POSIX time or Unix timestamp) is the number of seconds that have elapsed since January 1, 1970 (midnight UTC/GMT), not counting leap seconds (in ISO 8601: 1970-01-01T00:00:00Z). Literally speaking the epoch is Unix time 0 (midnight 1/1/1970), but 'epoch' is often used as a synonym for 'Unix time'. Many Unix systems store epoch dates as a signed 32-bit integer. Source: https://www.epochconverter.com/
+
+SELECT round(avg(CASE when mnth=11 THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3)as November_Average_Speed_MPH, round(avg(CASE when mnth=12 THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3)as December_Average_Speed_MPH, round(round(avg(CASE when mnth=11 THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3) - round(avg(CASE when mnth=12 THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3),3) as November_minus_December_Avg_Speed_MPH
+from orc_parted_taxifare;
+
+--November Month Average Speed: 12.695 MPH
+--December Month Average Speed: 12.625 MPH
+--Average Speed of November - Average Speed of December: 0.07 MPH
+--The Average Speed of taxis in November is greater than their Average Speed in December.
+
+--**********--
+
+--******** Stage 3: Question 4 ********--
+
+--3.4 Analyse the average speed of the most happening days of the year i.e. 31st December (New year’s eve) and 25th December (Christmas Eve) and compare it with the overall average. 
+
+SELECT round(avg(CASE when mnth=12 and m_day=25 THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3)as ChristmasEve_Average_Speed_MPH, round(avg(CASE when mnth=12 and m_day=31 THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3)as NewYearEve_Average_Speed_MPH, round(avg(CASE when mnth in (11,12) THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3)as Overall_Average_Speed_MPH, round(round(avg(CASE when mnth=12 and m_day=25 THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3) - round(avg(CASE when mnth in (11,12) THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3),3) as ChristmasEve_minus_Overall_Avg_Speed_MPH, round(round(avg(CASE when mnth=12 and m_day=31 THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3) - round(avg(CASE when mnth in (11,12) THEN (trip_distance/((unix_timestamp(tpep_dropoff_timestamp)-unix_timestamp(tpep_pickup_timestamp))/3600)) ELSE null end),3),3) as NewYearEve_minus_Overall_Avg_Speed_MPH
+from orc_parted_taxifare;
+
+--Overall Average Speed for November and December Combined: 12.659 MPH
+
+--1. Average Speed Statistics of Christmas Eve (25th December)
+--Average Speed on Christmas Eve: 16.859 MPH
+--Speed greater than Overall Avg: 4.20 MPH
+--Percentage greater than Overall Avg: + 33.18%
+
+--2. Average Speed Statistics of New Year's Eve (31st December)
+--Average Speed on New Year's Eve: 14.091 MPH
+--Speed greater than Overall Avg: 1.432 MPH
+--Percentage greater than Overall Avg: + 11.31%
+
+--The average speed on both Cristmas and New Year is higher than the overall average speed.
+--However, the average speed is Highest for Christmas out of the 3 instances considered for comparison.
+--**********--
